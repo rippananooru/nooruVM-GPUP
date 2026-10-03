@@ -19,7 +19,7 @@ Windows utilities for:
 
 > For USB/IP, keep the **entire `nooruVM-GPUP` folder on both machines**.
 
-## Structure
+<!-- ## Structure
 
 ```text
 nooruVM-GPUP\
@@ -36,4 +36,4 @@ nooruVM-GPUP\
     ├── usbip.example.xml
     ├── gpup.xml
     └── usbip.xml
-```
+``` -->
