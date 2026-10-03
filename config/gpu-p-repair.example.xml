@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPUPRepair>
+  <VMName>YOUR-VM-NAME</VMName>
+  <VHDXPath>C:\Path\To\Your\VM.vhdx</VHDXPath>
+</GPUPRepair>
