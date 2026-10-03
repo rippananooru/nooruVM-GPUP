@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPUP>
+  <VMName>nooruVM</VMName>
+  <VHDXPath>F:\VMs\nooruVM\nooruVM.vhdx</VHDXPath>
+  <GPUVendor>AMD</GPUVendor>
+
+  <PartitionCount>32</PartitionCount>
+
+  <VRAM>
+    <Min>0</Min>
+    <Max>1000000000</Max>
+    <Optimal>1000000000</Optimal>
+  </VRAM>
+
+  <Encode>
+    <Min>0</Min>
+    <Max>18446744073709551615</Max>
+    <Optimal>18446744073709551615</Optimal>
+  </Encode>
+
+  <Decode>
+    <Min>0</Min>
+    <Max>1000000000</Max>
+    <Optimal>1000000000</Optimal>
+  </Decode>
+
+  <Compute>
+    <Min>0</Min>
+    <Max>1000000000</Max>
+    <Optimal>1000000000</Optimal>
+  </Compute>
+</GPUP>

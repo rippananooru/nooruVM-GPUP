@@ -5,29 +5,42 @@
 #
 # Runs on the machine where the physical USB device is connected.
 #
+# Actions:
+#   Share
+#   Unshare
+#
 # Responsibilities:
 #   - Ensure usbipd-win is installed
 #   - Ensure usbipd service is running
 #   - Ensure TCP 3240 is allowed
 #   - Show local USB devices
-#   - Allow user to share/unshare devices
-#   - Maintain the shared active-host XML
+#   - Share / unshare selected devices
+#   - Maintain the active USB/IP host XML
 #
-# Shared XML:
-#   config\usbip-host.xml
+# Runtime XML:
+#   config\usbip.xml
+#
 # ============================================================
+
+param(
+    [ValidateSet("Share", "Unshare")]
+    [string]$Action = "Share"
+)
 
 $ErrorActionPreference = "Stop"
 
 # ============================================================
-# CONFIGURATION
+# REPOSITORY / CONFIGURATION
 # ============================================================
 
-$Port = 3240
-$RuleName = "USBIP - Allow TCP 3240"
+$ScriptRoot = $PSScriptRoot
+$RepoRoot   = Split-Path -Parent $ScriptRoot
 
-$ConfigDirectory = Join-Path $PSScriptRoot "config"
-$ConfigFile = Join-Path $ConfigDirectory "usbip-host.xml"
+$ConfigDirectory = Join-Path $RepoRoot "config"
+$ConfigFile      = Join-Path $ConfigDirectory "usbip.xml"
+
+$Port     = 3240
+$RuleName = "USBIP - Allow TCP 3240"
 
 $WingetPackage = "dorssel.usbipd-win"
 
@@ -36,7 +49,7 @@ $WingetPackage = "dorssel.usbipd-win"
 # ============================================================
 
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+$principal = New-Object System.Security.Principal.WindowsPrincipal($currentIdentity)
 
 if (-not $principal.IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -44,13 +57,15 @@ if (-not $principal.IsInRole(
 
     Write-Host ""
     Write-Host "Requesting Administrator privileges..." -ForegroundColor Yellow
+    Write-Host ""
 
     Start-Process powershell.exe `
         -Verb RunAs `
         -ArgumentList @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
-            "-File", "`"$PSCommandPath`""
+            "-File", "`"$PSCommandPath`"",
+            "-Action", $Action
         )
 
     exit
@@ -128,13 +143,13 @@ function Install-UsbIpd {
 
         Write-Host ""
         Write-Host "ERROR: usbipd-win installation failed." -ForegroundColor Red
+
         return $false
     }
 
     Write-Host ""
     Write-Host "usbipd-win installation completed." -ForegroundColor Green
 
-    # Refresh PATH in this PowerShell process.
     $machinePath = [Environment]::GetEnvironmentVariable(
         "Path",
         "Machine"
@@ -212,6 +227,7 @@ function Get-UsbIpdList {
 }
 
 function Parse-UsbIpdDevices {
+
     param(
         [string[]]$Lines
     )
@@ -224,8 +240,8 @@ function Parse-UsbIpdDevices {
 
         if ($text -match '^\s*(\S+)\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s+(.+?)\s*$') {
 
-            $busId = $Matches[1]
-            $vidPid = $Matches[2].ToLower()
+            $busId       = $Matches[1]
+            $vidPid      = $Matches[2].ToLower()
             $description = $Matches[3].Trim()
 
             if ($busId -match '^(BUSID|BUS)$') {
@@ -264,10 +280,14 @@ function Get-SharedDevices {
 
     return @(
         $devices | Where-Object {
-            $_.State -match '^Shared$'
+            $_.State -in @("Shared", "Attached")
         }
     )
 }
+
+# ============================================================
+# XML
+# ============================================================
 
 function Publish-ActiveHost {
 
@@ -284,42 +304,28 @@ function Publish-ActiveHost {
     }
 
     # --------------------------------------------------------
-    # No shared devices = this host is no longer active.
+    # No shared devices
     # --------------------------------------------------------
 
     if (-not $Devices -or $Devices.Count -eq 0) {
 
         if (Test-Path $ConfigFile) {
 
-            try {
-
-                [xml]$existing = Get-Content `
-                    -LiteralPath $ConfigFile `
-                    -Raw
-
-                $existingName = [string]$existing.USBIP.Host.Name
-
-                if ($existingName -eq $env:COMPUTERNAME) {
-
-                    Remove-Item `
-                        -LiteralPath $ConfigFile `
-                        -Force `
-                        -ErrorAction SilentlyContinue
-
-                    Write-Host ""
-                    Write-Host "No devices are currently shared." -ForegroundColor Yellow
-                    Write-Host "Active USB/IP host removed from XML." -ForegroundColor Yellow
-                }
-            }
-            catch {
-            }
+            Remove-Item `
+                -LiteralPath $ConfigFile `
+                -Force `
+                -ErrorAction SilentlyContinue
         }
+
+        Write-Host ""
+        Write-Host "No USB devices are currently shared." -ForegroundColor Yellow
+        Write-Host "usbip.xml removed." -ForegroundColor Yellow
 
         return $true
     }
 
     # --------------------------------------------------------
-    # Get Tailscale address
+    # Tailscale address
     # --------------------------------------------------------
 
     $tailscaleIP = Get-TailscaleIPv4
@@ -338,7 +344,7 @@ function Publish-ActiveHost {
 
     $settings = New-Object System.Xml.XmlWriterSettings
 
-    $settings.Indent = $true
+    $settings.Indent   = $true
     $settings.Encoding = New-Object System.Text.UTF8Encoding($false)
 
     $writer = [System.Xml.XmlWriter]::Create(
@@ -409,6 +415,10 @@ function Publish-ActiveHost {
         $writer.Close()
     }
 
+    Write-Host ""
+    Write-Host "USB/IP configuration updated." -ForegroundColor Green
+    Write-Host "Config : $ConfigFile" -ForegroundColor Green
+
     return $true
 }
 
@@ -421,14 +431,20 @@ function Refresh-HostXml {
     return $shared
 }
 
+# ============================================================
+# DISPLAY
+# ============================================================
+
 function Show-Devices {
+
     param(
-        [array]$Devices
+        [array]$Devices,
+        [string]$Title
     )
 
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "          LOCAL USB DEVICES" -ForegroundColor Cyan
+    Write-Host "          $Title" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
 
@@ -458,13 +474,15 @@ function Show-Devices {
 }
 
 function Select-Device {
+
     param(
-        [array]$Devices
+        [array]$Devices,
+        [string]$Prompt
     )
 
     while ($true) {
 
-        $selection = Read-Host "Select device number (Q to exit)"
+        $selection = Read-Host $Prompt
 
         if ($selection -match '^[Qq]$') {
             return $null
@@ -489,13 +507,23 @@ function Select-Device {
 }
 
 # ============================================================
-# START
+# COMMON SETUP
 # ============================================================
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "             USB/IP HOST" -ForegroundColor Cyan
+
+if ($Action -eq "Share") {
+    Write-Host "          USB/IP HOST - SHARE" -ForegroundColor Cyan
+}
+else {
+    Write-Host "         USB/IP HOST - UNSHARE" -ForegroundColor Cyan
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Config : $ConfigFile" -ForegroundColor DarkGray
 Write-Host ""
 
 # ============================================================
@@ -608,22 +636,14 @@ if (-not $tailscaleIP) {
 Write-Host "Tailscale : $tailscaleIP" -ForegroundColor Green
 
 # ============================================================
-# REFRESH XML BEFORE SHOWING MENU
+# ACTION: SHARE
 # ============================================================
 
-Refresh-HostXml | Out-Null
-
-# ============================================================
-# MAIN LOOP
-# ============================================================
-
-while ($true) {
+if ($Action -eq "Share") {
 
     $devices = Get-AllDevices
 
     if (-not $devices -or $devices.Count -eq 0) {
-
-        Refresh-HostXml | Out-Null
 
         Write-Host ""
         Write-Host "No USB devices detected." -ForegroundColor Yellow
@@ -633,16 +653,18 @@ while ($true) {
         exit 0
     }
 
-    Show-Devices -Devices $devices
+    Show-Devices `
+        -Devices $devices `
+        -Title "USB/IP HOST - SHARE"
 
-    $selected = Select-Device -Devices $devices
+    $selected = Select-Device `
+        -Devices $devices `
+        -Prompt "Select device number (Q to exit)"
 
     if (-not $selected) {
 
-        Refresh-HostXml | Out-Null
-
         Write-Host ""
-        Write-Host "Exiting." -ForegroundColor Yellow
+        Write-Host "Share cancelled." -ForegroundColor Yellow
 
         exit 0
     }
@@ -655,27 +677,29 @@ while ($true) {
     Write-Host "  State  : $($selected.State)"
     Write-Host ""
 
-    # --------------------------------------------------------
-    # Already shared
-    # --------------------------------------------------------
-
     if ($selected.State -eq "Shared") {
 
         Write-Host "This device is already shared." -ForegroundColor Yellow
+        Write-Host ""
 
-        $again = Read-Host "Return to device list? [Y/N]"
+        # Make sure XML is synchronized.
+        $shared = Refresh-HostXml
 
-        if ($again -match '^[Yy]$') {
-            continue
-        }
+        Write-Host ""
+        Write-Host "usbip.xml synchronized." -ForegroundColor Green
 
+        Read-Host "Press Enter to close"
         exit 0
     }
 
     $confirm = Read-Host "Share this device? [Y/N]"
 
     if ($confirm -notmatch '^[Yy]$') {
-        continue
+
+        Write-Host ""
+        Write-Host "Share cancelled." -ForegroundColor Yellow
+
+        exit 0
     }
 
     # --------------------------------------------------------
@@ -684,6 +708,7 @@ while ($true) {
 
     Write-Host ""
     Write-Host "Sharing $($selected.BusId)..." -ForegroundColor Cyan
+    Write-Host ""
 
     & $UsbIpd bind --busid="$($selected.BusId)"
 
@@ -693,37 +718,42 @@ while ($true) {
         Write-Host "ERROR: Failed to share device." -ForegroundColor Red
         Write-Host ""
 
-        Refresh-HostXml | Out-Null
-
-        $retry = Read-Host "Return to device list? [Y/N]"
-
-        if ($retry -match '^[Yy]$') {
-            continue
-        }
-
+        Read-Host "Press Enter to close"
         exit 1
     }
 
+    Write-Host ""
     Write-Host "Device shared successfully." -ForegroundColor Green
 
     Start-Sleep -Milliseconds 500
 
     # --------------------------------------------------------
-    # Update active host XML
+    # Generate / update usbip.xml
     # --------------------------------------------------------
 
     $shared = Refresh-HostXml
 
+    if (-not (Test-Path $ConfigFile)) {
+
+        Write-Host ""
+        Write-Host "ERROR: usbip.xml was not created." -ForegroundColor Red
+        Write-Host ""
+
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "         USB/IP HOST ACTIVE" -ForegroundColor Green
+    Write-Host "          USB/IP HOST - SHARE" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "Host      : $env:COMPUTERNAME"
     Write-Host "Tailscale : $tailscaleIP"
     Write-Host "Port      : $Port"
+    Write-Host "Config    : $ConfigFile"
     Write-Host ""
-    Write-Host "Exported devices:" -ForegroundColor Cyan
+    Write-Host "Shared devices:" -ForegroundColor Cyan
 
     foreach ($device in $shared) {
 
@@ -731,19 +761,125 @@ while ($true) {
     }
 
     Write-Host ""
+    Write-Host "USB/IP host share completed." -ForegroundColor Green
+    Write-Host ""
 
-    # --------------------------------------------------------
-    # Another device?
-    # --------------------------------------------------------
+    Read-Host "Press Enter to close"
 
-    $another = Read-Host "Share another USB device? [Y/N]"
+    exit 0
+}
 
-    if ($another -match '^[Yy]$') {
-        continue
+# ============================================================
+# ACTION: UNSHARE
+# ============================================================
+
+if ($Action -eq "Unshare") {
+
+    $devices = Get-SharedDevices
+
+    if (-not $devices -or $devices.Count -eq 0) {
+
+        Write-Host ""
+        Write-Host "No shared USB devices found." -ForegroundColor Yellow
+        Write-Host ""
+
+        # Clean stale XML if necessary.
+        Refresh-HostXml | Out-Null
+
+        Read-Host "Press Enter to close"
+        exit 0
+    }
+
+    Show-Devices `
+        -Devices $devices `
+        -Title "USB/IP HOST - UNSHARE"
+
+    $selected = Select-Device `
+        -Devices $devices `
+        -Prompt "Select shared device number (Q to exit)"
+
+    if (-not $selected) {
+
+        Write-Host ""
+        Write-Host "Unshare cancelled." -ForegroundColor Yellow
+
+        exit 0
     }
 
     Write-Host ""
-    Write-Host "USB/IP host is ready." -ForegroundColor Green
+    Write-Host "Selected:" -ForegroundColor Green
+    Write-Host "  Bus ID : $($selected.BusId)"
+    Write-Host "  VID:PID: $($selected.VidPid)"
+    Write-Host "  Device : $($selected.Description)"
+    Write-Host ""
+
+    $confirm = Read-Host "Unshare this device? [Y/N]"
+
+    if ($confirm -notmatch '^[Yy]$') {
+
+        Write-Host ""
+        Write-Host "Unshare cancelled." -ForegroundColor Yellow
+
+        exit 0
+    }
+
+    # --------------------------------------------------------
+    # Unbind
+    # --------------------------------------------------------
+
+    Write-Host ""
+    Write-Host "Unsharing $($selected.BusId)..." -ForegroundColor Cyan
+    Write-Host ""
+
+    & $UsbIpd unbind --busid="$($selected.BusId)"
+
+    if ($LASTEXITCODE -ne 0) {
+
+        Write-Host ""
+        Write-Host "ERROR: Failed to unshare device." -ForegroundColor Red
+        Write-Host ""
+
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "Device unshared successfully." -ForegroundColor Green
+
+    Start-Sleep -Milliseconds 500
+
+    # --------------------------------------------------------
+    # Update / remove usbip.xml
+    # --------------------------------------------------------
+
+    $shared = Refresh-HostXml
+
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "         USB/IP HOST - UNSHARE" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+
+    if ($shared -and $shared.Count -gt 0) {
+
+        Write-Host "Remaining shared devices:" -ForegroundColor Cyan
+
+        foreach ($device in $shared) {
+
+            Write-Host "  $($device.BusId)  $($device.VidPid)  $($device.Description)"
+        }
+
+        Write-Host ""
+        Write-Host "usbip.xml updated." -ForegroundColor Green
+    }
+    else {
+
+        Write-Host "No USB devices remain shared." -ForegroundColor Yellow
+        Write-Host "usbip.xml removed." -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "USB/IP host unshare completed." -ForegroundColor Green
     Write-Host ""
 
     Read-Host "Press Enter to close"
