@@ -16,6 +16,8 @@
 #   - Show local USB devices
 #   - Share / unshare selected devices
 #   - Maintain the active USB/IP host XML
+#   - Stop Steam for devices that cannot be exported while Steam
+#     is actively using them
 #
 # Runtime XML:
 #   config\usbip.xml
@@ -43,6 +45,25 @@ $Port     = 3240
 $RuleName = "USBIP - Allow TCP 3240"
 
 $WingetPackage = "dorssel.usbipd-win"
+
+# ============================================================
+# DEVICES THAT REQUIRE STEAM TO BE STOPPED
+#
+# USB/IP cannot export these devices while Steam is actively
+# using them.
+#
+# Format:
+#   VID:PID
+#
+# Logitech G923:
+#   046d:c266
+#
+# Add future Steam-exclusive devices here if required.
+# ============================================================
+
+$SteamExclusiveDevices = @(
+    "046d:c266"
+)
 
 # ============================================================
 # SELF ELEVATE
@@ -283,6 +304,98 @@ function Get-SharedDevices {
             $_.State -in @("Shared", "Attached")
         }
     )
+}
+
+# ============================================================
+# STEAM HANDLING
+# ============================================================
+
+function Test-SteamExclusiveDevice {
+
+    param(
+        [PSCustomObject]$Device
+    )
+
+    if (-not $Device) {
+        return $false
+    }
+
+    return $SteamExclusiveDevices -contains $Device.VidPid
+}
+
+function Stop-SteamForDevice {
+
+    param(
+        [PSCustomObject]$Device
+    )
+
+    if (-not (Test-SteamExclusiveDevice -Device $Device)) {
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Steam-exclusive device detected." -ForegroundColor Yellow
+    Write-Host "VID:PID : $($Device.VidPid)" -ForegroundColor Yellow
+    Write-Host "Device  : $($Device.Description)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Stopping Steam before USB/IP sharing..." -ForegroundColor Cyan
+    Write-Host ""
+
+    $steamProcesses = @(
+        "steam",
+        "steamservice",
+        "steamwebhelper"
+    )
+
+    $found = $false
+
+    foreach ($processName in $steamProcesses) {
+
+        $processes = Get-Process `
+            -Name $processName `
+            -ErrorAction SilentlyContinue
+
+        if ($processes) {
+
+            $found = $true
+
+            foreach ($process in $processes) {
+
+                Write-Host "Stopping $($process.ProcessName) (PID $($process.Id))..." `
+                    -ForegroundColor Yellow
+
+                try {
+
+                    Stop-Process `
+                        -Id $process.Id `
+                        -Force `
+                        -ErrorAction Stop
+                }
+                catch {
+
+                    Write-Host `
+                        "WARNING: Could not stop $($process.ProcessName) (PID $($process.Id))." `
+                        -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+
+    if (-not $found) {
+
+        Write-Host "Steam is not running." -ForegroundColor Green
+    }
+    else {
+
+        # Give Steam a moment to release the USB device.
+        Start-Sleep -Seconds 2
+
+        Write-Host ""
+        Write-Host "Steam stopped. USB device should now be available." `
+            -ForegroundColor Green
+    }
+
+    Write-Host ""
 }
 
 # ============================================================
@@ -701,6 +814,15 @@ if ($Action -eq "Share") {
 
         exit 0
     }
+
+    # --------------------------------------------------------
+    # Steam handling
+    #
+    # Only devices explicitly listed in
+    # $SteamExclusiveDevices will trigger this.
+    # --------------------------------------------------------
+
+    Stop-SteamForDevice -Device $selected
 
     # --------------------------------------------------------
     # Bind
