@@ -17,7 +17,7 @@ Windows utilities for:
 
 > **GPU-P has only been tested with AMD GPUs.**
 
-> For USB/IP, keep the **entire `nooruVM-GPUP` folder on both machines**.
+> For USB/IP, keep the **entire `rippananooru-GPUP` folder on both machines**.
 
 <!-- ## Structure
 
